@@ -614,10 +614,11 @@ object SystemProbe {
         val n = hw(info.id) ?: return null
         return when (kind) {
             // MediaTek hardware ids HW5.. map onto Xiaomi's source ids 23.. for HDMI; models that
-            // number theirs otherwise have them in their profile (MiTV-ANTL0, #64).
+            // number theirs otherwise expose the actual order in their TV configuration. Profiles
+            // remain as a fallback for older firmwares where that API is absent (MiTV-ANTL0, #64).
             SourceKind.Hdmi -> Intent("com.xiaomi.mitv.tvplayer.EXTSRC_PLAY")
                 .setComponent(ComponentName(XIAOMI_PLAYER, "$XIAOMI_PLAYER.ExternalSourceActivity"))
-                .putExtra("input", profile.xiaomiSourceIds[n] ?: (n + 18))
+                .putExtra("input", xiaomiConfiguredSource(label) ?: profile.xiaomiSourceIds[n] ?: (n + 18))
             // DP and USB-C numbers do not follow the HDMI ones (#62), so only models whose numbers
             // are known get a route; the rest fall back to the generic intent.
             SourceKind.DisplayPort -> profile.xiaomiSourceIds[n]?.let {
@@ -638,6 +639,23 @@ object SystemProbe {
             }
             SourceKind.Usb, SourceKind.Other -> null
         }
+    }
+
+    /**
+     * Some Xiaomi firmwares use a board-specific source order even on the same model. Their own
+     * player asks ConfigurationManager for hdmiN_order, so prefer that capability over guessing
+     * from the model or build number. Reflection keeps Aerial installable on non-Xiaomi systems
+     * where the vendor framework is not present.
+     */
+    private fun xiaomiConfiguredSource(label: String): Int? {
+        val port = Regex("HDMI\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            .find(label)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        return runCatching {
+            val configuration = Class.forName("mitv.common.ConfigurationManager")
+            val manager = configuration.getMethod("getInstance").invoke(null)
+            configuration.getMethod("queryTvConfigByKey", String::class.java)
+                .invoke(manager, "hdmi${port}_order") as? String
+        }.getOrNull()?.trim()?.toIntOrNull()?.takeIf { it > 0 }
     }
 
     private fun isDigitalTuner(label: String, hw: Int): Boolean = when {
@@ -665,9 +683,9 @@ object SystemProbe {
  * MiTV-ANTL0 (L42R7-RA, Amlogic, Android 5.1) registers only one HDMI input, HW6, labelled
  * HDMI2, but it is the HDMI 1 port and source 23 (#64, from the reporter's logcat).
  * MiTV4-ANSM0 (Mi TV 4, Amlogic, Android 6.0.1) registers an HDMI input only for a port with a
- * device in it; HW7 is source 23, not 25 (#191, the reporter scanned sources 1–32). Mi TV 4A
- * (MiTV4A, L32M5-AZ, same firmware) is the same: HW7 is 23 (#313, scanned likewise). Firmware
- * 22.x numbers the ports as the general rule does (#375).
+ * device in it. Different boards report HW7 as source 23 (#191) or source 25 (#492), which the
+ * firmware's hdmi3_order configuration distinguishes. Mi TV 4A (MiTV4A, L32M5-AZ) uses source 23
+ * (#313). Firmware 22.x numbers the ports as the general rule does (#375).
  * MiTV-MFZP0 (77" OLED, mt9950, Android 9) registers HW4–HW7 as HDMI 1–4 but has three ports:
  * HW7 has none behind it, and its tvplayer numbers them hw + 19 (#311, the reporter's local build).
  */
